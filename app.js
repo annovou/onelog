@@ -14,7 +14,8 @@
   const WD_CHAR = ['一', '二', '三', '四', '五', '六', '日'];
 
   const DEFAULT_SETTINGS = {
-    sleepGoal: 8, exerciseGoal: 30, studyGoal: 60, waterGoal: 8, mealGoal: 3, theme: 'light',
+    sleepGoal: 8, exerciseGoal: 30, studyGoal: 60, waterGoal: 8, mealGoal: 3, stepsGoal: 8000,
+    theme: 'light',
     ai: null
   };
 
@@ -46,10 +47,13 @@
     meal: {
       title: '记录饮食', icon: '🍜',
       fields: [
-        { k: 'meal', label: '餐次', type: 'chips', options: ['早餐', '午餐', '晚餐', '加餐', '咖啡', '酒'], def: '午餐' },
+        { k: 'meal', label: '这一口是', type: 'chips', options: ['早餐', '午餐', '晚餐', '加餐', '零食', '饮料', '水果', '补剂'], def: '午餐' },
         { k: 'food', label: '吃了什么', type: 'text', wide: true, ph: '牛肉面 + 一份青菜' },
+        { k: 'portion', label: '份量', type: 'chips', options: ['少量', '正常', '偏多'], def: '正常' },
         { k: 'fullness', label: '饱腹感', type: 'range', min: 1, max: 5, def: 4, fmt: v => v + '/5' },
-        { k: 'where', label: '来源', type: 'chips', options: ['自炊', '外食', '外卖'], def: '自炊' }
+        { k: 'where', label: '来源', type: 'chips', options: ['自炊', '外食', '外卖', '零食'], def: '自炊' },
+        { k: 'cost', label: '花费', type: 'number', min: 0, max: 9999, def: 0, fmt: v => '¥' + v },
+        { k: 'note', label: '备注', type: 'text', wide: true, ph: '口味、和谁吃、吃完什么感觉' }
       ]
     },
     exercise: {
@@ -121,7 +125,7 @@
      状态
      --------------------------------------------------------- */
   let state = { events: [], todos: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
-  const ui = { tab: 'today', filter: 'all', addDay: 'today', parsed: null, imp: null, editId: null, wd: 'sleep', tlLimit: 14, insCache: null, tcx: null };
+  const ui = { tab: 'today', filter: 'all', addDay: 'today', parsed: null, imp: null, editId: null, wd: 'sleep', tlLimit: 14, insCache: null, tcx: null, search: '' };
 
   /* dayStats 缓存：任何一次 save() 都会让版本号 +1，从而整体失效 */
   let cacheVer = 0;
@@ -323,25 +327,37 @@
     const sum = (t, f) => evs.filter(e => e.type === t).reduce((a, e) => a + (f(e.data || {}) || 0), 0);
     const sleepEv = evs.find(e => e.type === 'sleep' && e.data);
     const moodEv = evs.filter(e => e.type === 'mood' && e.data).slice(-1)[0];
+    const bodyEv = evs.filter(e => e.type === 'body' && e.data).slice(-1)[0];
     const res = {
       key: dayKey,
       recorded: evs.length,
       sleep: sum('sleep', d => d.hours),
       sleepQ: sleepEv ? (sleepEv.data.quality || 0) : 0,
-      meals: evs.filter(e => e.type === 'meal' && d_notDrink(e)).length,
+      meals: evs.filter(e => e.type === 'meal' && isMainMeal(e)).length,
+      foodCount: evs.filter(e => e.type === 'meal').length,
       exercise: sum('exercise', d => d.minutes),
+      exerciseKm: sum('exercise', d => d.distance),
       exerciseN: evs.filter(e => e.type === 'exercise').length,
       study: sum('study', d => d.minutes),
       water: sum('water', d => d.cups),
       mood: moodEv ? (moodEv.data.score || 0) : 0,
       steps: sum('activity', d => d.steps),
+      takeout: evs.filter(e => e.type === 'meal' && e.data && (e.data.where === '外卖' || e.data.where === '外食')).length,
+      foodCost: sum('meal', d => d.cost),
+      restHr: bodyEv ? (bodyEv.data.restingHr || 0) : 0,
+      hrMin: bodyEv ? (bodyEv.data.hrMin || 0) : 0,
+      hrMax: bodyEv ? (bodyEv.data.hrMax || 0) : 0,
       events: evs
     };
     statsCache[dayKey] = { v: cacheVer, s: res };
     return res;
   }
 
-  function d_notDrink(e) { return e.data && e.data.meal && e.data.meal !== '咖啡' && e.data.meal !== '酒'; }
+  /* 正餐 = 早/午/晚，其余（加餐、零食、饮料、水果、补剂）算「零碎」 */
+  const MAIN_MEALS = { '早餐': 1, '午餐': 1, '晚餐': 1, '早饭': 1, '午饭': 1, '晚饭': 1 };
+  function isMainMeal(e) {
+    return !!(e.data && MAIN_MEALS[e.data.meal]);
+  }
 
   function lastNKeys(n, offset) {
     offset = offset || 0;
@@ -362,6 +378,10 @@
       exerciseMin: sum(S, s => s.exercise),
       studyMin: sum(S, s => s.study),
       waterAvg: S.length ? sum(S, s => s.water) / S.length : 0,
+      stepsAvg: (function () {
+        const w = S.filter(s => s.steps > 0);
+        return w.length ? sum(w, s => s.steps) / w.length : 0;
+      })(),
       moodAvg: (function () {
         const m = S.filter(s => s.mood > 0);
         return m.length ? sum(m, s => s.mood) / m.length : 0;
@@ -474,9 +494,9 @@
       }
     }
 
-    return '<div class="chart-card">' +
+    return '<div class="chart-card" data-act="dp" data-k="weekday" style="cursor:pointer">' +
       '<div class="chart-head"><span class="chart-title">一周节奏</span>' +
-        '<span class="chart-legend">最近 28 天</span></div>' +
+        '<span class="chart-legend">最近 28 天 ›</span></div>' +
       '<div class="filters inline">' + tabs + '</div>' +
       body +
       (note ? '<div class="chart-note">' + note + '</div>' : '') +
@@ -494,11 +514,18 @@
           t: '睡了 ' + fmtHM((d.hours || 0) * 60),
           m: (d.bed || '--:--') + ' – ' + (d.wake || '--:--') + ' · 质量 ' + (d.quality || '-') + '/5'
         };
-      case 'meal':
+      case 'meal': {
+        const bits = [];
+        if (d.portion) bits.push(d.portion);
+        if (d.fullness) bits.push('饱腹 ' + d.fullness + '/5');
+        if (d.where) bits.push(d.where);
+        if (d.cost) bits.push('¥' + d.cost);
+        if (d.note) bits.push(d.note);
         return {
           t: (d.meal || '饮食') + '：' + (d.food || '—'),
-          m: [d.where, d.fullness ? '饱腹 ' + d.fullness + '/5' : ''].filter(Boolean).join(' · ')
+          m: bits.join(' · ')
         };
+      }
       case 'exercise': {
         const parts = [fmtHM(d.minutes || 0)];
         if (d.distance) parts.push(d.distance + ' km');
@@ -521,8 +548,16 @@
       }
       case 'water':
         return { t: '喝水 ' + (d.cups || 1) + ' 杯', m: '' };
-      case 'body':
-        return { t: '体重 ' + (d.weight || '—') + ' kg', m: d.restingHr ? '静息心率 ' + d.restingHr + ' bpm' : '' };
+      case 'body': {
+        const t = d.weight
+          ? '体重 ' + d.weight + ' kg'
+          : (d.restingHr ? '静息心率 ' + d.restingHr + ' bpm' : (d.spo2 ? '血氧 ' + d.spo2 + '%' : '身体数据'));
+        const m = [];
+        if (d.weight && d.restingHr) m.push('静息心率 ' + d.restingHr + ' bpm');
+        if (d.hrMin && d.hrMax) m.push('全天心率 ' + d.hrMin + '–' + d.hrMax);
+        if (d.spo2) m.push('血氧 ' + d.spo2 + '%');
+        return { t: t, m: m.join(' · ') };
+      }
       case 'note':
         return { t: '日记', m: (d.text || '').slice(0, 40) };
       case 'habit':
@@ -792,7 +827,8 @@
 
     const cards = [
       { type: 'sleep', ico: '🌙', name: '睡眠', val: s.sleep ? s.sleep.toFixed(1) : '—', unit: 'h', pct: s.sleep / st.sleepGoal, goal: '目标 ' + st.sleepGoal + 'h' },
-      { type: 'meal', ico: '🍜', name: '饮食', val: s.meals || '—', unit: '餐', pct: s.meals / st.mealGoal, goal: '目标 ' + st.mealGoal + ' 餐' },
+      { type: 'meal', ico: '🍜', name: '饮食', val: s.meals || '—', unit: '餐', pct: s.meals / st.mealGoal,
+        goal: s.foodCount > s.meals ? '共 ' + s.foodCount + ' 条 · 含零食饮料' : '目标 ' + st.mealGoal + ' 餐' },
       { type: 'exercise', ico: '🏃', name: '运动', val: s.exercise || '—', unit: 'min', pct: s.exercise / st.exerciseGoal, goal: '目标 ' + st.exerciseGoal + 'min' },
       { type: 'study', ico: '📖', name: '学习', val: s.study || '—', unit: 'min', pct: s.study / st.studyGoal, goal: '目标 ' + st.studyGoal + 'min' }
     ];
@@ -807,19 +843,37 @@
     ).join('');
 
     const todos = state.todos.filter(t => t.date === todayKey());
+    const doneN = todos.filter(t => t.done).length;
+    const todoPct = todos.length ? Math.round(doneN / todos.length * 100) : 0;
+
     const todoHtml = todos.length
-      ? todos.map(t =>
-          '<div class="todo' + (t.done ? ' done' : '') + '">' +
+      ? '<div class="todo-progress"><i style="width:' + todoPct + '%"></i></div>' +
+        todos.slice().sort(function (a, b) {
+          if (!!a.done !== !!b.done) return a.done ? 1 : -1;
+          return String(a.time || '99:99').localeCompare(String(b.time || '99:99'));
+        }).map(function (t) {
+          const meta = [
+            t.time,
+            t.tag,
+            t.done && t.doneAt ? '完成于 ' + t.doneAt : ''
+          ].filter(Boolean).join(' · ');
+          return '<div class="todo' + (t.done ? ' done' : '') + '">' +
             '<button class="check' + (t.done ? ' on' : '') + '" data-act="todo-toggle" data-id="' + t.id + '"></button>' +
-            '<span class="todo-text">' + esc(t.text) + '</span>' +
+            '<div class="todo-main" data-act="todo-open" data-id="' + t.id + '">' +
+              '<div class="todo-text">' + esc(t.text) + '</div>' +
+              (meta ? '<div class="todo-meta">' + esc(meta) + '</div>' : '') +
+            '</div>' +
             '<button class="todo-del" data-act="todo-del" data-id="' + t.id + '">✕</button>' +
-          '</div>').join('')
-      : '<div class="todo"><span class="todo-text" style="color:var(--ink3)">今天还没有安排，加一件最重要的事</span></div>';
+          '</div>';
+        }).join('')
+      : '<div class="todo"><span class="todo-text" style="color:var(--ink3)">今天还没有任务，先加一件最重要的</span></div>';
 
     const quick = [
       { q: 'water', ico: '💧', label: '喝水' },
-      { q: 'coffee', ico: '☕', label: '咖啡' },
+      { q: 'fruit', ico: '🍎', label: '水果' },
+      { q: 'snack', ico: '🍫', label: '零食' },
       { q: 'run', ico: '🏃', label: '跑步' },
+      { q: 'walk', ico: '🚶', label: '散步' },
       { q: 'read', ico: '📖', label: '读书' },
       { q: 'mood', ico: '💗', label: '心情' },
       { q: 'weight', ico: '⚖️', label: '体重' },
@@ -827,6 +881,14 @@
     ].map(x => '<button class="qbtn" data-act="quick" data-q="' + x.q + '"><span>' + x.ico + '</span>' + x.label + '</button>').join('');
 
     const todayEvs = eventsOf(todayKey()).slice().sort((a, b) => b.ts.localeCompare(a.ts));
+
+    /* 手表同步过来的步数（心率挪到洞察页了） */
+    const healthBits = [];
+    if (s.steps) healthBits.push('<span class="hb">👟 <b>' + Number(s.steps).toLocaleString('zh-CN') + '</b> 步</span>');
+    const healthStrip = healthBits.length
+      ? '<div class="health-strip">' + healthBits.join('') + '</div>'
+      : '';
+
     const preview = todayEvs.slice(0, 5).map(rowHtml).join('') ||
       '<div class="empty"><span class="empty-ico">🌤</span>今天还是空白的<br>点下面的 ＋ 记下第一件事' +
       '<div style="margin-top:14px"><button class="btn btn-ghost" data-act="add-yesterday">补记昨天</button></div></div>';
@@ -834,12 +896,22 @@
     return '<div class="page">' +
       '<div class="quote"><span class="quote-k">今日一句</span>' + esc(todayQuote()) + '</div>' +
       '<div class="grid2">' + cardsHtml + '</div>' +
+      healthStrip +
       '<div class="section">' +
-        '<div class="section-head"><span class="section-title">今日三件事</span></div>' +
+        '<div class="section-head"><span class="section-title">今日任务</span>' +
+          (todos.length ? '<span class="todo-count">' + doneN + '/' + todos.length + ' 完成</span>' : '') +
+        '</div>' +
         '<div class="card">' + todoHtml +
           '<div class="todo-add">' +
-            '<input id="todoInput" type="text" placeholder="添加一件…" maxlength="60">' +
+            '<input id="todoInput" type="text" placeholder="今天要做什么…" maxlength="60">' +
             '<button data-act="todo-add">添加</button>' +
+          '</div>' +
+          '<div class="todo-opts">' +
+            '<input id="todoTime" type="time" class="todo-time-input" title="几点前完成">' +
+            '<div class="chip-row todo-tags" id="todoTagRow">' +
+              ['工作', '生活', '健康', '学习'].map(tg =>
+                '<button class="chip" data-val="' + tg + '">' + tg + '</button>').join('') +
+            '</div>' +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -869,18 +941,46 @@
   /* ---------------------------------------------------------
      渲染：时间轴
      --------------------------------------------------------- */
+  /* 搜索用的可读文本 */
+  function eventText(e) {
+    const d = e.data || {};
+    const parts = [
+      TYPES[e.type] ? TYPES[e.type].name : '',
+      d.food, d.note, d.subject, d.kind, d.text, d.trigger, d.name, d.method,
+      d.meal, d.where, d.portion, d.place,
+      Array.isArray(d.tags) ? d.tags.join(' ') : ''
+    ];
+    return parts.filter(Boolean).join(' ').toLowerCase();
+  }
+
   function viewTimeline() {
-    const filters = [['all', '全部']].concat(Object.keys(TYPES).map(k => [k, TYPES[k].name]));
+    /* 喝水并进「饮食」，时间轴里不再单独一个板块 */
+    const FILTER_TYPES = Object.keys(TYPES).filter(k => k !== 'water');
+    const filters = [['all', '全部']].concat(FILTER_TYPES.map(k => [k, TYPES[k].name]));
     const fHtml = filters.map(f =>
       '<button class="fchip' + (ui.filter === f[0] ? ' on' : '') + '" data-act="filter" data-f="' + f[0] + '">' + f[1] + '</button>'
     ).join('');
 
+    const q = String(ui.search || '').trim();
+    const searchHtml = '<div class="search-box">' +
+      '<input id="tlSearch" type="search" placeholder="搜点什么：火锅、英语、跑步…" value="' + esc(q) + '">' +
+      (q ? '<button class="search-clear" data-act="search-clear">✕</button>' : '') +
+    '</div>';
+
     let evs = state.events.slice();
-    if (ui.filter !== 'all') evs = evs.filter(e => e.type === ui.filter);
+    if (ui.filter === 'meal') evs = evs.filter(e => e.type === 'meal' || e.type === 'water');
+    else if (ui.filter !== 'all') evs = evs.filter(e => e.type === ui.filter);
+
+    if (q) {
+      const lq = q.toLowerCase();
+      evs = evs.filter(e => eventText(e).indexOf(lq) >= 0);
+    }
 
     if (!evs.length) {
-      return '<div class="page"><div class="filters">' + fHtml + '</div>' +
-        '<div class="empty" style="padding-top:60px"><span class="empty-ico">🗂</span>还没有记录<br>点下面的 ＋ 开始</div></div>';
+      return '<div class="page">' + searchHtml + '<div class="filters">' + fHtml + '</div>' +
+        '<div class="empty" style="padding-top:60px"><span class="empty-ico">' + (q ? '🔍' : '🗂') + '</span>' +
+        (q ? '没有找到「' + esc(q) + '」<br>换个词试试' : '还没有记录<br>点下面的 ＋ 开始') +
+        '</div></div>';
     }
 
     const groups = {};
@@ -912,36 +1012,353 @@
         '加载更早的 ' + Math.min(rest, 14) + ' 天 · 还有 ' + rest + ' 天</button>'
       : '';
 
-    return '<div class="page"><div class="filters">' + fHtml + '</div>' + body + more + '</div>';
+    return '<div class="page">' + searchHtml + '<div class="filters">' + fHtml + '</div>' +
+      (q ? '<div class="search-hit">找到 ' + evs.length + ' 条「' + esc(q) + '」</div>' : '') +
+      body + more + '</div>';
+  }
+
+  function dpStat(k, v, unit) {
+    return '<div class="dt-stat"><b>' + v + '</b><span>' + k + (unit ? ' · ' + unit : '') + '</span></div>';
+  }
+
+  function dpBars(values, keys, color, goal) {
+    const max = Math.max.apply(null, values.concat([goal || 0, 1])) * 1.02;
+    return '<div class="bars">' + values.map(function (v, i) {
+      const d = new Date(keys[i] + 'T00:00:00');
+      const lbl = (i % 7 === 0) ? (d.getMonth() + 1) + '/' + d.getDate() : '';
+      const pct = v ? clamp(v / max * 100, 3, 100) : 0;
+      return '<div class="bar-col">' +
+        '<div class="bar-val"></div>' +
+        '<div class="bar-track">' +
+          (goal ? '<div class="bar-goal" style="bottom:' + (goal / max * 100) + '%"></div>' : '') +
+          '<div class="bar" style="height:' + pct + '%;background:' + color + '"></div>' +
+        '</div>' +
+        '<div class="bar-lbl">' + lbl + '</div>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+
+  function dpRows(rows) {
+    return rows.map(function (r) {
+      return '<div class="split-row">' +
+        '<span class="dp-name">' + esc(r.label) + '</span>' +
+        '<span class="split-bar"><i style="width:' + clamp(r.pct, 4, 100) + '%;background:' +
+          (r.color || 'var(--ink3)') + '"></i></span>' +
+        '<span class="split-time">' + esc(r.right) + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  function fmtBed(m) {
+    const h = Math.floor(m / 60) % 24;
+    const mi = Math.round(m % 60);
+    return pad(h) + ':' + pad(mi);
+  }
+
+  function openDetail(k) {
+    const keys = lastNKeys(28);
+    const S = keys.map(dayStats);
+    const total = f => S.reduce((a, s) => a + (f(s) || 0), 0);
+    let title = '数据';
+    let stats = '';
+    let chart = '';
+    let extra = '';
+    let note = '';
+
+    if (k === 'steps') {
+      const vals = S.map(s => s.steps);
+      const nz = vals.filter(v => v > 0);
+      const avg = nz.length ? Math.round(nz.reduce((a, b) => a + b, 0) / nz.length) : 0;
+      const goal = state.settings.stepsGoal || 8000;
+      title = '步数';
+      stats = dpStat('日均', avg.toLocaleString('zh-CN'), '步') +
+              dpStat('最高', Math.max.apply(null, vals.concat([0])).toLocaleString('zh-CN'), '步') +
+              dpStat('达标', vals.filter(v => v >= goal).length, '天');
+      chart = dpBars(vals, keys, 'var(--activity)', goal);
+      const wk = weekdayBuckets('steps', 28).filter(x => x.n > 0);
+      if (wk.length >= 3) {
+        const sorted = wk.slice().sort((a, b) => a.avg - b.avg);
+        const hi = sorted[sorted.length - 1], lo = sorted[0];
+        note = '周' + WD_CHAR[hi.w] + '走得最多（平均 ' + Math.round(hi.avg).toLocaleString('zh-CN') +
+          ' 步），周' + WD_CHAR[lo.w] + '最少（' + Math.round(lo.avg).toLocaleString('zh-CN') + ' 步）。';
+      }
+
+    } else if (k === 'sleep') {
+      const vals = S.map(s => s.sleep);
+      const nz = vals.filter(v => v > 0);
+      const avg = nz.length ? nz.reduce((a, b) => a + b, 0) / nz.length : 0;
+      const goal = state.settings.sleepGoal;
+      const sd = sleepRegularity(28);
+      title = '睡眠';
+      stats = dpStat('平均', avg ? avg.toFixed(1) : '—', '小时') +
+              dpStat('达标', nz.filter(v => v >= goal).length + '/' + nz.length, '天') +
+              dpStat('波动', sd != null ? '±' + Math.round(sd * 60) : '—', '分钟');
+      chart = dpBars(vals, keys, 'var(--sleep)', goal);
+
+      const beds = [];
+      state.events.forEach(function (e) {
+        if (e.type !== 'sleep' || !e.data || keys.indexOf(e.ts.slice(0, 10)) < 0) return;
+        const m = bedMinutes(e.data.bed);
+        if (m != null) beds.push({ k: e.ts.slice(0, 10), m: m });
+      });
+      if (beds.length >= 8) {
+        const wd = beds.filter(b => weekdayOf(b.k) < 5).map(b => b.m);
+        const we = beds.filter(b => weekdayOf(b.k) >= 5).map(b => b.m);
+        if (wd.length >= 3 && we.length >= 3) {
+          const a = fmtBed(wd.reduce((x, y) => x + y, 0) / wd.length);
+          const b = fmtBed(we.reduce((x, y) => x + y, 0) / we.length);
+          note = '工作日平均 ' + a + ' 入睡，周末 ' + b + '。';
+        }
+      }
+
+    } else if (k === 'exercise') {
+      const n = total(s => s.exerciseN);
+      const mins = total(s => s.exercise);
+      const km = Math.round(total(s => s.exerciseKm) * 10) / 10;
+      title = '运动';
+      stats = dpStat('次数', n, '次') + dpStat('总时长', Math.round(mins), '分钟') + dpStat('总距离', km, 'km');
+      chart = dpBars(S.map(s => s.exercise), keys, 'var(--exercise)', 0);
+
+      const kinds = {};
+      state.events.forEach(function (e) {
+        if (e.type !== 'exercise' || !e.data || keys.indexOf(e.ts.slice(0, 10)) < 0) return;
+        const kk = e.data.kind || '其他';
+        kinds[kk] = (kinds[kk] || 0) + (e.data.minutes || 0);
+      });
+      const arr = Object.keys(kinds).map(x => ({ label: x, v: kinds[x] })).sort((a, b) => b.v - a.v);
+      const all = arr.reduce((a, x) => a + x.v, 0) || 1;
+      if (arr.length) {
+        extra = '<div class="dt-card"><div class="dt-card-t">类型分布<span class="dt-card-v">按分钟</span></div>' +
+          dpRows(arr.map(x => ({ label: x.label, pct: x.v / all * 100, right: Math.round(x.v) + ' 分', color: 'var(--exercise)' }))) +
+          '</div>';
+      }
+
+    } else if (k === 'study') {
+      const vals = S.map(s => s.study);
+      const mins = total(s => s.study);
+      title = '学习';
+      stats = dpStat('总时长', Math.round(mins), '分钟') +
+              dpStat('有学', vals.filter(v => v > 0).length, '天') +
+              dpStat('最长', Math.max.apply(null, vals.concat([0])), '分钟');
+      chart = dpBars(vals, keys, 'var(--study)', state.settings.studyGoal);
+
+      const subs = {};
+      state.events.forEach(function (e) {
+        if (e.type !== 'study' || !e.data || keys.indexOf(e.ts.slice(0, 10)) < 0) return;
+        const s2 = e.data.subject || '未命名';
+        subs[s2] = (subs[s2] || 0) + (e.data.minutes || 0);
+      });
+      const arr = Object.keys(subs).map(x => ({ label: x, v: subs[x] })).sort((a, b) => b.v - a.v).slice(0, 6);
+      const all = Object.keys(subs).reduce((a, x) => a + subs[x], 0) || 1;
+      if (arr.length) {
+        extra = '<div class="dt-card"><div class="dt-card-t">科目分布<span class="dt-card-v">按分钟</span></div>' +
+          dpRows(arr.map(x => ({ label: x.label, pct: x.v / all * 100, right: Math.round(x.v) + ' 分', color: 'var(--study)' }))) +
+          '</div>';
+      }
+
+    } else if (k === 'mood') {
+      const vals = S.map(s => s.mood);
+      const nz = vals.filter(v => v > 0);
+      const avg = nz.length ? nz.reduce((a, b) => a + b, 0) / nz.length : 0;
+      title = '情绪';
+      stats = dpStat('平均', avg ? avg.toFixed(1) : '—', '分') + dpStat('记录', nz.length, '天') +
+              dpStat('最低', nz.length ? Math.min.apply(null, nz) : '—', '分');
+      chart = '<div class="dt-svg">' + lineChart(vals, 5, '#E8697D') + '</div>';
+
+      const dist = [0, 0, 0, 0, 0];
+      nz.forEach(v => { dist[clamp(Math.round(v) - 1, 0, 4)]++; });
+      const maxD = Math.max.apply(null, dist.concat([1]));
+      extra = '<div class="dt-card"><div class="dt-card-t">分数分布<span class="dt-card-v">' + nz.length + ' 天</span></div>' +
+        dpRows(['😞', '😕', '😐', '🙂', '😄'].map(function (e, i) {
+          return { label: e + ' ' + (i + 1) + '分', pct: dist[i] / maxD * 100, right: dist[i] + ' 天', color: 'var(--mood)' };
+        })) + '</div>';
+
+    } else if (k === 'food') {
+      const all = total(s => s.foodCount);
+      const main = total(s => s.meals);
+      const takeout = total(s => s.takeout);
+      const cost = total(s => s.foodCost);
+      title = '饮食';
+      stats = dpStat('记录', all, '条') + dpStat('正餐', main, '餐') + dpStat('外卖', takeout, '条');
+      chart = dpBars(S.map(s => s.foodCount), keys, 'var(--meal)', 0);
+
+      const foods = {};
+      state.events.forEach(function (e) {
+        if (e.type !== 'meal' || !e.data || keys.indexOf(e.ts.slice(0, 10)) < 0) return;
+        const f = String(e.data.food || '').trim();
+        if (!f || f === '—') return;
+        foods[f] = (foods[f] || 0) + 1;
+      });
+      const top = Object.keys(foods).map(x => ({ label: x, v: foods[x] })).sort((a, b) => b.v - a.v).slice(0, 6);
+      if (top.length) {
+        const mx = top[0].v || 1;
+        extra = '<div class="dt-card"><div class="dt-card-t">最常吃<span class="dt-card-v">按次数</span></div>' +
+          dpRows(top.map(x => ({ label: x.label, pct: x.v / mx * 100, right: x.v + ' 次', color: 'var(--meal)' }))) +
+          '</div>';
+      }
+      if (cost) note = '这 28 天饮食花费合计 ¥' + Math.round(cost) + '。';
+
+    } else if (k === 'weekday') {
+      title = '一周节奏';
+      const metrics = [['sleep', '睡眠(h)'], ['mood', '情绪'], ['study', '学习(min)'], ['exercise', '运动(min)']];
+      const bks = {};
+      metrics.forEach(function (m) { bks[m[0]] = weekdayBuckets(m[0], 28); });
+
+      let rows = '';
+      for (let w = 0; w < 7; w++) {
+        rows += '<tr><td>周' + WD_CHAR[w] + '</td>' +
+          metrics.map(function (m) {
+            const b = bks[m[0]][w];
+            return '<td>' + (b.avg ? b.avg.toFixed(m[0] === 'sleep' ? 1 : 0) : '—') + '</td>';
+          }).join('') + '</tr>';
+      }
+      extra = '<div class="dt-card"><div class="dt-card-t">按星期几平均<span class="dt-card-v">28 天</span></div>' +
+        '<div class="tbl-wrap"><table class="preview"><thead><tr><th></th>' +
+        metrics.map(m => '<th>' + m[1] + '</th>').join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+      note = '数字是该星期几的平均值，空格代表那天没有记录。';
+    }
+
+    $('#overlay').innerHTML =
+      '<div class="report">' +
+        '<div class="report-head"><span class="set-desc" style="margin:0">' + esc(title) + ' · 最近 28 天</span>' +
+          '<button class="sheet-close" data-act="close">✕</button></div>' +
+        '<div class="report-body">' +
+          '<div class="dt-stats" style="margin-top:14px">' + stats + '</div>' +
+          (chart ? '<div class="dt-card"><div class="dt-card-t">' + esc(title) + '趋势</div>' + chart + '</div>' : '') +
+          extra +
+          (note ? '<div class="chart-note">' + esc(note) + '</div>' : '') +
+        '</div>' +
+      '</div>';
   }
 
   /* ---------------------------------------------------------
-     渲染：洞察
+     心率详情（洞察页二级页面）
+     --------------------------------------------------------- */
+
+  function heartDays(n) {
+    return lastNKeys(n || 7).filter(function (k) {
+      const s = dayStats(k);
+      return s.restHr > 0 || s.hrMin > 0 || s.hrMax > 0;
+    }).reverse();
+  }
+
+  function hrSeriesOf(k) {
+    const e = state.events.filter(function (x) {
+      return x.type === 'body' && x.ts.slice(0, 10) === k && x.data &&
+        x.data.hrSeries && x.data.hrSeries.length > 1;
+    }).slice(-1)[0];
+    return e ? e.data.hrSeries : null;
+  }
+
+  /* 24 小时心率曲线 */
+  function dayHrSvg(series) {
+    const W = 300, H = 130, pad = 8;
+    const vals = series.map(p => p[1]);
+    let min = Math.min.apply(null, vals);
+    let max = Math.max.apply(null, vals);
+    if (max - min < 6) { const mid = (max + min) / 2; min = mid - 3; max = mid + 3; }
+    const px = sec => pad + (sec / 86400) * (W - 2 * pad);
+    const py = v => H - pad - (v - min) / (max - min) * (H - 2 * pad);
+
+    const line = series.map(function (p, i) {
+      return (i ? 'L' : 'M') + px(p[0]).toFixed(1) + ' ' + py(p[1]).toFixed(1);
+    }).join('');
+    const area = line + ' L' + px(series[series.length - 1][0]).toFixed(1) + ' ' + H +
+      ' L' + px(series[0][0]).toFixed(1) + ' ' + H + ' Z';
+
+    let grid = '';
+    [0, 6, 12, 18, 24].forEach(function (h) {
+      const x = px(h * 3600).toFixed(1);
+      grid += '<line x1="' + x + '" y1="' + pad + '" x2="' + x + '" y2="' + (H - pad) +
+        '" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>';
+    });
+
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '">' +
+      '<defs><linearGradient id="hrg" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#E8697D" stop-opacity=".25"/>' +
+      '<stop offset="100%" stop-color="#E8697D" stop-opacity="0"/>' +
+      '</linearGradient></defs>' +
+      grid +
+      '<path d="' + area + '" fill="url(#hrg)"/>' +
+      '<path d="' + line + '" fill="none" stroke="#E8697D" stroke-width="2" ' +
+        'stroke-linejoin="round" stroke-linecap="round"/>' +
+      '</svg>' +
+      '<div class="hr-axis"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>';
+  }
+
+  function openHeartDetail(day) {
+    const days = heartDays(7);
+    if (!days.length) { toast('最近 7 天没有心率数据'); return; }
+
+    const cur = (day && days.indexOf(day) >= 0) ? day : days[0];
+    const s = dayStats(cur);
+    const ser = hrSeriesOf(cur);
+    const dt = new Date(cur + 'T00:00:00');
+
+    const chips = days.map(function (k) {
+      const d = new Date(k + 'T00:00:00');
+      return '<button class="fchip' + (k === cur ? ' on' : '') + '" data-act="hr-day" data-d="' + k + '">' +
+        (d.getMonth() + 1) + '/' + d.getDate() + '</button>';
+    }).join('');
+
+    const big = function (k, v, unit) {
+      return '<div class="dt-stat"><b>' + v + '</b><span>' + k + (unit ? ' (' + unit + ')' : '') + '</span></div>';
+    };
+    const stats =
+      big('静息', s.restHr || '—', 'bpm') +
+      big('最低', s.hrMin || '—', 'bpm') +
+      big('最高', s.hrMax || '—', 'bpm');
+
+    const chart = ser
+      ? '<div class="dt-card"><div class="dt-card-t">全天心率' +
+        '<span class="dt-card-v">' + ser.length + ' 个点</span></div>' +
+        '<div class="dt-svg">' + dayHrSvg(ser) + '</div></div>'
+      : '<div class="dt-card"><div class="dt-card-t">全天心率</div>' +
+        '<div class="empty" style="padding:18px 0">这一天只有汇总数字，没有逐点曲线</div></div>';
+
+    $('#overlay').innerHTML =
+      '<div class="report">' +
+        '<div class="report-head">' +
+          '<span class="set-desc" style="margin:0">' + (dt.getMonth() + 1) + '月' + dt.getDate() + '日 ' +
+            WEEK[dt.getDay()] + '</span>' +
+          '<button class="sheet-close" data-act="close">✕</button></div>' +
+        '<div class="report-body">' +
+          '<div class="filters" style="margin:14px 0 10px;padding:0">' + chips + '</div>' +
+          '<div class="dt-stats">' + stats + '</div>' +
+          chart +
+          '<div class="disclaimer">数据来自 Health Connect，由手表经 Health Sync 写入。</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  /* ---------------------------------------------------------
+     洞察
      --------------------------------------------------------- */
   function viewInsights() {
     const cur = weekSummary(0), prev = weekSummary(1);
     const keys = lastNKeys(7);
     const S = keys.map(dayStats);
 
-    const stat = (k, v, unit, dcur, dprev, invert) => {
+    const stat = (key, label, v, unit, dcur, dprev) => {
       let dh = '';
       if (dprev > 0 && dcur !== dprev) {
         const pct = Math.round((dcur - dprev) / dprev * 100);
         if (isFinite(pct) && pct !== 0) {
           const up = pct > 0;
-          const good = invert ? !up : up;
-          dh = '<div class="delta ' + (good ? 'up' : 'down') + '">' + (up ? '↑' : '↓') + ' ' + Math.abs(pct) + '% 较上周</div>';
+          dh = '<div class="delta ' + (up ? 'up' : 'down') + '">' + (up ? '↑' : '↓') + ' ' +
+            Math.abs(pct) + '% 较上周</div>';
         }
       }
-      return '<div class="stat"><div class="stat-k">' + k + '</div>' +
+      return '<div class="stat" data-act="dp" data-k="' + key + '" style="cursor:pointer">' +
+        '<div class="stat-k">' + label + '</div>' +
         '<div class="stat-v">' + v + '<em>' + unit + '</em></div>' + dh + '</div>';
     };
 
     const statsHtml =
-      stat('记录天数', cur.recordDays, '天', cur.recordDays, prev.recordDays, false) +
-      stat('平均睡眠', cur.sleepAvg ? cur.sleepAvg.toFixed(1) : '—', 'h', cur.sleepAvg, prev.sleepAvg, false) +
-      stat('运动次数', cur.exerciseN, '次', cur.exerciseN, prev.exerciseN, false) +
-      stat('学习时长', Math.round(cur.studyMin), 'min', cur.studyMin, prev.studyMin, false);
+      stat('steps', '日均步数', cur.stepsAvg ? Math.round(cur.stepsAvg).toLocaleString('zh-CN') : '—', '步', cur.stepsAvg, prev.stepsAvg) +
+      stat('sleep', '平均睡眠', cur.sleepAvg ? cur.sleepAvg.toFixed(1) : '—', 'h', cur.sleepAvg, prev.sleepAvg) +
+      stat('exercise', '运动次数', cur.exerciseN, '次', cur.exerciseN, prev.exerciseN) +
+      stat('study', '学习时长', Math.round(cur.studyMin), 'min', cur.studyMin, prev.studyMin);
 
     /* 睡眠柱图 */
     const sleepVals = S.map(s => s.sleep);
@@ -963,6 +1380,58 @@
     const moodVals = S.map(s => s.mood);
     const lineHtml = lineChart(moodVals, 5, '#E8697D');
 
+    /* 饮食：7 天条数，正餐深色 + 零碎浅色 */
+    const foodMax = Math.max.apply(null, S.map(s => s.foodCount).concat([1]));
+    const foodBars = S.map(function (s, i) {
+      const d = new Date(keys[i] + 'T00:00:00');
+      const main = s.meals || 0;
+      const extra = Math.max(0, (s.foodCount || 0) - main);
+      const tot = main + extra;
+      const hTot = tot ? Math.max(tot / foodMax * 100, 8) : 0;
+      const segExtra = tot ? extra / tot * 100 : 0;
+      return '<div class="bar-col">' +
+        '<div class="bar-val">' + (tot || '') + '</div>' +
+        '<div class="bar-track">' +
+          '<div style="width:100%;height:' + hTot + '%;display:flex;flex-direction:column;justify-content:flex-end">' +
+            (extra ? '<div style="height:' + segExtra.toFixed(1) + '%;background:var(--meal);opacity:.35"></div>' : '') +
+            '<div style="height:' + (100 - segExtra).toFixed(1) + '%;background:var(--meal)"></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="bar-lbl">' + (d.getMonth() + 1) + '/' + d.getDate() + '</div>' +
+      '</div>';
+    }).join('');
+
+    const foodMain = S.reduce((a, s) => a + (s.meals || 0), 0);
+    const foodAll = S.reduce((a, s) => a + (s.foodCount || 0), 0);
+    const foodTakeout = S.reduce((a, s) => a + (s.takeout || 0), 0);
+    const foodCost = S.reduce((a, s) => a + (s.foodCost || 0), 0);
+    const foodNote = function () {
+      if (!foodAll) return '这 7 天还没有饮食记录。';
+      const bits = ['共 <b>' + foodAll + '</b> 条', '正餐 <b>' + foodMain + '</b>'];
+      if (foodAll > foodMain) bits.push('零食饮料 <b>' + (foodAll - foodMain) + '</b>');
+      if (foodTakeout) bits.push('外食/外卖 <b>' + foodTakeout + '</b> 条');
+      if (foodCost) bits.push('花费 <b>¥' + foodCost + '</b>');
+      return bits.join(' · ');
+    }();
+
+    /* 心率入口 */
+    const hDays = heartDays(7);
+    const restVals = S.map(s => s.restHr).filter(v => v > 0);
+    const hrCardHtml = hDays.length
+      ? '<div class="chart-card" data-act="hr-open" style="cursor:pointer">' +
+          '<div class="chart-head"><span class="chart-title">心率</span>' +
+            '<span class="chart-legend">最近 7 天 ›</span></div>' +
+          (restVals.length > 1
+            ? '<div class="dt-svg">' + seriesSvg(restVals, '#E8697D', 72) + '</div>'
+            : '<div style="font-size:26px;font-weight:700;letter-spacing:-1px">' +
+              (restVals[0] || '—') + '<span style="font-size:12px;color:var(--ink3);margin-left:4px">bpm 静息</span></div>') +
+          '<div class="chart-note">静息心率' +
+            (restVals.length ? ' <b>' + Math.min.apply(null, restVals) + '–' + Math.max.apply(null, restVals) + '</b> bpm' : '') +
+            '　点开看每天的全天曲线</div>' +
+        '</div>'
+      : '<div class="chart-card"><div class="chart-head"><span class="chart-title">心率</span></div>' +
+          '<div class="empty" style="padding:18px 0">还没有心率数据<br>同步后这里会出现曲线</div></div>';
+
     /* 洞察卡 */
     const ins = computeInsights();
     ui.insCache = ins;
@@ -983,14 +1452,24 @@
       '<div class="stat-grid">' + statsHtml + '</div>' +
 
       '<div class="section">' +
-        '<div class="section-head"><span class="section-title">睡眠 7 日</span><span class="chart-legend">虚线 = 目标</span></div>' +
-        '<div class="chart-card"><div class="bars">' + barsHtml + '</div></div>' +
+        '<div class="section-head"><span class="section-title">睡眠 7 日</span><span class="chart-legend">虚线 = 目标 ›</span></div>' +
+        '<div class="chart-card" data-act="dp" data-k="sleep" style="cursor:pointer"><div class="bars">' + barsHtml + '</div></div>' +
       '</div>' +
 
       '<div class="section">' +
-        '<div class="section-head"><span class="section-title">情绪 7 日</span></div>' +
-        '<div class="chart-card">' + lineHtml + '</div>' +
+        '<div class="section-head"><span class="section-title">情绪 7 日</span><span class="chart-legend">最近 28 天 ›</span></div>' +
+        '<div class="chart-card" data-act="dp" data-k="mood" style="cursor:pointer">' + lineHtml + '</div>' +
       '</div>' +
+
+      '<div class="section">' +
+        '<div class="section-head"><span class="section-title">饮食 7 日</span>' +
+          '<span class="chart-legend">深色正餐 · 浅色零碎 ›</span></div>' +
+        '<div class="chart-card" data-act="dp" data-k="food" style="cursor:pointer">' +
+          '<div class="bars">' + foodBars + '</div>' +
+          '<div class="chart-note">' + foodNote + '</div></div>' +
+      '</div>' +
+
+      '<div class="section">' + hrCardHtml + '</div>' +
 
       '<div class="section">' + weekdayCard() + '</div>' +
 
@@ -1053,6 +1532,7 @@
         step('studyGoal', '学习', 'min', 10, 300, 10) +
         step('waterGoal', '喝水', '杯', 1, 16, 1) +
         step('mealGoal', '三餐', '餐', 1, 6, 1) +
+        step('stepsGoal', '步数', '步', 1000, 30000, 1000) +
       '</div>' +
 
       '<div class="set-group-title">外观</div>' +
@@ -1095,7 +1575,7 @@
 
       '<div class="set-group-title">关于</div>' +
       '<div class="set-group">' +
-        '<div class="set-row"><span class="set-label">版本</span><span class="set-desc" style="margin:0">v1.9 · 原型</span></div>' +
+        '<div class="set-row"><span class="set-label">版本</span><span class="set-desc" style="margin:0">v2.1 · 原型</span></div>' +
         '<div class="set-row"><span class="set-label">存储</span><span class="set-desc" style="margin:0">仅本机 localStorage</span></div>' +
       '</div>' +
 
@@ -1191,10 +1671,10 @@
       '<div class="field-ctl">' + ctl + '</div></div>';
   }
 
-  function openForm(type, ev) {
+  function openForm(type, ev, preset) {
     const f = FORMS[type];
     if (!f) return;
-    const vals = ev ? (ev.data || {}) : null;
+    const vals = ev ? (ev.data || {}) : (preset || null);
     ui.editId = ev ? ev.id : null;
 
     const fields = f.fields.map(fd => renderField(fd, vals)).join('');
@@ -1597,22 +2077,95 @@
         '<div class="bd-s">' + (bits.join('，') || '这天你留下了记录') + '。</div></div>';
     }
 
-    /* 建议：优先看趋势，再看单周 */
-    let advice;
-    const sleepDrop = base.sleep ? (cur.sleepAvg - base.sleep) : 0;
-    if (base.sleep && sleepDrop <= -0.3) {
-      advice = '这周比过去 4 周平均少睡了 ' + Math.round(-sleepDrop * 60) + ' 分钟。先别加新习惯，把这一项补回来就够了。';
-    } else if (cur.sleepAvg && cur.sleepAvg < 7) {
-      advice = '这周平均只睡了 ' + cur.sleepAvg.toFixed(1) + ' 小时。下周试试把上床时间提前 30 分钟，只改这一件事，看看情绪会不会不一样。';
-    } else if (cur.exerciseN < 3) {
-      advice = '这周运动了 ' + cur.exerciseN + ' 次。下周安排 2 次 20 分钟的散步，走的时候不带手机，把它当成给大脑的休息。';
-    } else if (cur.studyMin < 120) {
-      advice = '这周学习 ' + Math.round(cur.studyMin) + ' 分钟。下周挑一个固定的 30 分钟时段，只做一件事，不切窗口。';
-    } else if (cur.recordDays < 5) {
-      advice = '这周记了 ' + cur.recordDays + ' 天。下周目标不是记得更全，而是每天至少留下 1 条。';
-    } else {
-      advice = '这周状态不错。下周保持现在的节奏就好，别加码——能长期做下去比做得更多重要。';
-    }
+    /* 建议：从真实数据里找「最值得动的那一项」，不是套模板 */
+    const advice = (function () {
+      const cands = [];
+      const ins = computeInsights();
+      const hasIns = t => ins.some(i => i.t === t);
+
+      const foodAll = S.reduce((a, s) => a + (s.foodCount || 0), 0);
+      const foodMain = S.reduce((a, s) => a + (s.meals || 0), 0);
+      const takeout = S.reduce((a, s) => a + (s.takeout || 0), 0);
+      const foodCost = S.reduce((a, s) => a + (s.foodCost || 0), 0);
+
+      /* 1. 睡眠明显下滑 */
+      if (base.sleep && cur.sleepAvg && cur.sleepAvg < base.sleep - 0.25) {
+        const drop = Math.round((base.sleep - cur.sleepAvg) * 60);
+        cands.push({
+          w: drop,
+          t: '这周平均睡 ' + cur.sleepAvg.toFixed(1) + ' 小时，比过去 4 周的 ' + base.sleep.toFixed(1) +
+             ' 小时少了 ' + drop + ' 分钟。先别加新习惯，把睡眠补回来这一项就够了。'
+        });
+      }
+
+      /* 2. 睡眠不足 7 小时 */
+      if (cur.sleepAvg && cur.sleepAvg < 7) {
+        cands.push({
+          w: Math.round((7 - cur.sleepAvg) * 40),
+          t: '这周平均只睡 ' + cur.sleepAvg.toFixed(1) + ' 小时，离 7 小时还差 ' +
+             Math.round((7 - cur.sleepAvg) * 60) + ' 分钟。下周就一个目标：上床时间提前 30 分钟，连做 5 天。'
+        });
+      }
+
+      /* 3. 运动太少（如果能引用「运动→睡眠」的洞察，更有说服力） */
+      if (cur.exerciseN < 3) {
+        cands.push({
+          w: (3 - cur.exerciseN) * 9,
+          t: hasIns('运动 × 睡眠')
+            ? '你自己的数据里，运动的那天睡得明显更好——可这周只动了 ' + cur.exerciseN +
+              ' 次。下周挑三天，每次二十分钟散步就行。'
+            : '这周只动了 ' + cur.exerciseN + ' 次。下周先定 2 次 20 分钟的散步，不用换衣服、不用去健身房，出门走就行。'
+        });
+      }
+
+      /* 4. 学习太少 */
+      if (cur.studyMin < 120) {
+        cands.push({
+          w: (120 - cur.studyMin) / 6,
+          t: '这周学习 ' + Math.round(cur.studyMin) + ' 分钟，平均每天 ' + Math.round(cur.studyMin / 7) +
+             ' 分钟。下周挑一个固定的 30 分钟，只做一件事，不切窗口。'
+        });
+      }
+
+      /* 5. 零食饮料过多 */
+      if (foodAll >= 10 && foodAll - foodMain >= foodMain * 0.5) {
+        cands.push({
+          w: (foodAll - foodMain) * 1.4,
+          t: '这周 ' + foodAll + ' 条饮食记录里，正餐只有 ' + foodMain + ' 顿，其余 ' + (foodAll - foodMain) +
+             ' 条是零食饮料。不用戒，先把下午那顿零食换成水果或坚果试试。'
+        });
+      } else if (takeout >= 5) {
+        cands.push({
+          w: takeout * 1.2,
+          t: '这周有 ' + takeout + ' 顿是外食或外卖' + (foodCost ? '，花了 ¥' + foodCost : '') +
+             '。下周挑两天自己弄点简单的，省下的不只是钱。'
+        });
+      }
+
+      /* 6. 记录太少 */
+      if (cur.recordDays < 5) {
+        cands.push({
+          w: (5 - cur.recordDays) * 5,
+          t: '这周只记了 ' + cur.recordDays + ' 天。下周不用三分钟热度，每天留下 1 条就够。'
+        });
+      }
+
+      if (!cands.length) {
+        return '这周各项都在自己的节奏上：平均睡 ' + (cur.sleepAvg ? cur.sleepAvg.toFixed(1) : '—') +
+          ' 小时、动了 ' + cur.exerciseN + ' 次、学习 ' + Math.round(cur.studyMin) +
+          ' 分钟。下周别加码，保持就好——能长期做下去比做得更多重要。';
+      }
+
+      cands.sort((a, b) => b.w - a.w);
+      const top = cands[0];
+
+      /* 如果有印证它的洞察，补一句 */
+      let tail = '';
+      if (top.t.indexOf('睡眠') >= 0 && hasIns('睡眠 × 情绪')) tail = '（你的数据里，睡不好的第二天情绪也会低。）';
+      else if (hasIns('星期几效应')) tail = '';
+
+      return top.t + tail;
+    })();
 
     const range = (function () {
       const a = new Date(keys[0] + 'T00:00:00'), b = new Date(keys[6] + 'T00:00:00');
@@ -1708,6 +2261,38 @@
           '<button class="btn btn-primary btn-block" data-act="sleep-replace" style="margin-bottom:10px">替换那一条</button>' +
           '<button class="btn btn-ghost btn-block" data-act="sleep-add" style="margin-bottom:10px">再记一条（如午睡）</button>' +
           '<button class="btn btn-ghost btn-block" data-act="close">取消</button>' +
+        '</div>' +
+      '</div>';
+  }
+
+  /* 编辑任务（内容 / 时间 / 分类） */
+  function openTodoSheet(id) {
+    const t = state.todos.find(x => x.id === id);
+    if (!t) return;
+    const tags = ['工作', '生活', '健康', '学习'];
+
+    $('#overlay').innerHTML =
+      '<div class="mask" data-act="close"></div>' +
+      '<div class="sheet">' +
+        '<div class="sheet-grab"></div>' +
+        '<div class="sheet-head"><div class="sheet-title">编辑任务</div>' +
+          '<button class="sheet-close" data-act="close">✕</button></div>' +
+        '<div class="sheet-body">' +
+          '<div class="field-block"><div class="field-label">任务内容</div>' +
+            '<input class="field-input" id="tdText" type="text" value="' + esc(t.text) + '" maxlength="60"></div>' +
+          '<div class="field"><span class="field-label">几点前完成</span><div class="field-ctl">' +
+            '<input class="field-input" id="tdTime" type="time" value="' + (t.time || '') + '" style="max-width:130px">' +
+          '</div></div>' +
+          '<div class="field"><span class="field-label">分类</span><div class="field-ctl">' +
+            '<div class="chip-row" id="tdTagRow">' +
+              tags.map(function (tg) {
+                return '<button class="chip' + (t.tag === tg ? ' sel' : '') + '" data-val="' + tg + '">' + tg + '</button>';
+              }).join('') +
+            '</div></div></div>' +
+        '</div>' +
+        '<div class="sheet-foot" style="display:flex;gap:10px">' +
+          '<button class="btn btn-ghost" data-act="todo-del" data-id="' + id + '" style="flex:0 0 88px;color:#C0503F">删除</button>' +
+          '<button class="btn btn-primary" data-act="todo-save" data-id="' + id + '" style="flex:1">保存</button>' +
         '</div>' +
       '</div>';
   }
@@ -2375,8 +2960,9 @@
     return '上次同步 ' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
-  /* 把 Health Connect 的原始样本翻译成我们的事件 */
-  function buildHealthRecords(sleepSamples, stepSamples, hrSamples, weightSamples) {
+  /* 把 Health Connect 的原始样本翻译成我们的事件
+     extra: { hr: 连续心率, mindful: 正念, state: 情绪 } */
+  function buildHealthRecords(sleepSamples, stepSamples, restingHrSamples, weightSamples, extra) {
     const out = [];
     const SKIP_STATE = { awake: 1, inBed: 1 };
 
@@ -2416,17 +3002,28 @@
       out.push({ type: 'activity', day: dateKey(d), time: '23:59', data: { steps: n, activeMin: 0 } });
     });
 
-    /* 静息心率 + 体重：合并成每天一条 body，避免同一天两条撞车 */
+    /* 静息心率 + 连续心率 + 体重：合并成每天一条 body */
     const bodies = {};
-    (hrSamples || []).forEach(function (s) {
+    const bodyStamp = {};
+    const ensureBody = function (k) {
+      if (!bodies[k]) bodies[k] = { weight: 0, restingHr: 0 };
+      return bodies[k];
+    };
+    /* 同一天多条时，只保留「时间最晚」的那条，不依赖数组顺序 */
+    const setLatest = function (k, field, v, t) {
+      const key = k + '|' + field;
+      if (bodyStamp[key] != null && t <= bodyStamp[key]) return;
+      bodyStamp[key] = t;
+      ensureBody(k)[field] = v;
+    };
+
+    (restingHrSamples || []).forEach(function (s) {
       if (!s || !s.startDate) return;
       const d = new Date(s.startDate);
       if (isNaN(d)) return;
       const v = Math.round(Number(s.value) || 0);
       if (v < 30 || v > 250) return;
-      const k = dateKey(d);
-      if (!bodies[k]) bodies[k] = { weight: 0, restingHr: 0 };
-      bodies[k].restingHr = v;
+      setLatest(dateKey(d), 'restingHr', v, d.getTime());
     });
     (weightSamples || []).forEach(function (s) {
       if (!s || !s.startDate) return;
@@ -2434,12 +3031,91 @@
       if (isNaN(d)) return;
       const v = Math.round(Number(s.value) * 10) / 10;
       if (v < 20 || v > 300) return;
-      const k = dateKey(d);
-      if (!bodies[k]) bodies[k] = { weight: 0, restingHr: 0 };
-      bodies[k].weight = v;
+      setLatest(dateKey(d), 'weight', v, d.getTime());
     });
+
+    /* 全天心率：算出 min / max / 平均，并保留抽稀后的曲线 */
+    const dayHr = {};
+    const dayHrSeries = {};
+    ((extra && extra.hr) || []).forEach(function (s) {
+      if (!s || !s.startDate) return;
+      const d = new Date(s.startDate);
+      if (isNaN(d)) return;
+      const v = Math.round(Number(s.value) || 0);
+      if (v < 30 || v > 250) return;
+      const k = dateKey(d);
+      if (!dayHr[k]) dayHr[k] = { min: v, max: v, sum: v, n: 1 };
+      else {
+        const o = dayHr[k];
+        o.min = Math.min(o.min, v);
+        o.max = Math.max(o.max, v);
+        o.sum += v;
+        o.n += 1;
+      }
+      const sec = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+      (dayHrSeries[k] = dayHrSeries[k] || []).push([sec, v]);
+    });
+    Object.keys(dayHr).forEach(function (k) {
+      const o = dayHr[k];
+      const b = ensureBody(k);
+      b.hrMin = o.min;
+      b.hrMax = o.max;
+      b.hrAvg = Math.round(o.sum / o.n);
+      const ser = (dayHrSeries[k] || []).sort(function (a, b2) { return a[0] - b2[0]; });
+      if (ser.length > 1) b.hrSeries = downsample(ser, 150);
+    });
+
+    /* 血氧：每天取最后一条，兼容 0.98 / 98 两种表示 */
+    ((extra && extra.spo2) || []).forEach(function (s) {
+      if (!s || !s.startDate) return;
+      const d = new Date(s.startDate);
+      if (isNaN(d)) return;
+      let v = Number(s.value);
+      if (!isFinite(v)) return;
+      if (v <= 1) v = v * 100;
+      v = Math.round(v);
+      if (v < 50 || v > 100) return;
+      setLatest(dateKey(d), 'spo2', v, d.getTime());
+    });
+
     Object.keys(bodies).forEach(function (k) {
       out.push({ type: 'body', day: k, time: '07:20', data: bodies[k] });
+    });
+
+    /* 正念 / 冥想 → 习惯打卡 */
+    const dayMind = {};
+    ((extra && extra.mindful) || []).forEach(function (s) {
+      if (!s || !s.startDate) return;
+      const d = new Date(s.startDate);
+      if (isNaN(d)) return;
+      const mins = Number(s.value);
+      if (!isFinite(mins) || mins <= 0) return;
+      const k = dateKey(d);
+      dayMind[k] = (dayMind[k] || 0) + mins;
+    });
+    Object.keys(dayMind).forEach(function (k) {
+      out.push({
+        type: 'habit', day: k, time: '21:00',
+        data: { name: '正念 ' + Math.round(dayMind[k]) + ' 分钟', done: '完成' }
+      });
+    });
+
+    /* 情绪：stateOfMind 的 valence 是 -1~1，折算成 1~5 分 */
+    const dayMood = {};
+    ((extra && extra.state) || []).forEach(function (s) {
+      if (!s || !s.startDate) return;
+      const d = new Date(s.startDate);
+      if (isNaN(d)) return;
+      const v = Number(s.value);
+      if (!isFinite(v)) return;
+      const score = clamp(Math.round((v + 1) / 2 * 4) + 1, 1, 5);
+      dayMood[dateKey(d)] = score;
+    });
+    Object.keys(dayMood).forEach(function (k) {
+      out.push({
+        type: 'mood', day: k, time: '21:30',
+        data: { score: dayMood[k], tags: [], trigger: '', energy: dayMood[k] }
+      });
     });
 
     return out;
@@ -2463,6 +3139,17 @@
     return added;
   }
 
+  /* 某类数据读不到就让它是空的，不能拖垮整次同步 */
+  async function safeRead(H, dataType, range) {
+    try {
+      const r = await H.readSamples(Object.assign({ dataType: dataType }, range));
+      return (r && r.samples) || [];
+    } catch (e) {
+      console.warn('[health] 读不到 ' + dataType, e);
+      return [];
+    }
+  }
+
   async function syncHealth(days) {
     const H = healthPlugin();
     if (!H) { toast('这个功能要在安卓 App 里用'); return; }
@@ -2475,25 +3162,47 @@
         return;
       }
 
+      /* 核心四类必须要，缺了没法用 */
       await H.requestAuthorization({
         read: ['sleep', 'steps', 'restingHeartRate', 'weight'],
         write: []
       });
 
+      /* 心率 / 正念 / 情绪不是所有系统都支持，单独申请，失败不影响主流程 */
+      try {
+        await H.requestAuthorization({
+          read: ['heartRate', 'mindfulness', 'stateOfMind', 'oxygenSaturation'],
+          write: []
+        });
+      } catch (e) {
+        console.warn('[health] 扩展权限不可用，跳过', e);
+      }
+
       const startDate = new Date(Date.now() - days * 86400000).toISOString();
       const endDate = new Date().toISOString();
-      const range = { startDate: startDate, endDate: endDate, limit: 1000 };
+      const range = { startDate: startDate, endDate: endDate, limit: 2000 };
 
-      const sleep = await H.readSamples(Object.assign({ dataType: 'sleep' }, range));
-      const steps = await H.queryAggregated({
-        dataType: 'steps', startDate: startDate, endDate: endDate, bucket: 'day', aggregation: 'sum'
+      const sleep = await safeRead(H, 'sleep', range);
+      const restHr = await safeRead(H, 'restingHeartRate', range);
+      const weight = await safeRead(H, 'weight', range);
+      const contHr = await safeRead(H, 'heartRate', range);
+      const mind = await safeRead(H, 'mindfulness', range);
+      const stateMood = await safeRead(H, 'stateOfMind', range);
+      const spo2 = await safeRead(H, 'oxygenSaturation', range);
+
+      let stepSamples = [];
+      try {
+        const st = await H.queryAggregated({
+          dataType: 'steps', startDate: startDate, endDate: endDate, bucket: 'day', aggregation: 'sum'
+        });
+        stepSamples = (st && st.samples) || [];
+      } catch (e) {
+        console.warn('[health] 步数聚合失败', e);
+      }
+
+      const recs = buildHealthRecords(sleep, stepSamples, restHr, weight, {
+        hr: contHr, mindful: mind, state: stateMood, spo2: spo2
       });
-      const hr = await H.readSamples(Object.assign({ dataType: 'restingHeartRate' }, range));
-      const weight = await H.readSamples(Object.assign({ dataType: 'weight' }, range));
-
-      const recs = buildHealthRecords(
-        sleep && sleep.samples, steps && steps.samples, hr && hr.samples, weight && weight.samples
-      );
       const added = addExternal(recs);
       setLastSync(new Date().toISOString());
       render();
@@ -2524,7 +3233,7 @@
     'type 只能是：sleep, meal, exercise, study, mood, water, body, activity, note, habit',
     '各类型的 data 字段：',
     'sleep: {bed:"HH:mm", wake:"HH:mm", hours:数字(小时), quality:1-5}',
-    'meal: {meal:"早餐|午餐|晚餐|加餐|咖啡|酒", food:"字符串", fullness:1-5, where:"自炊|外食|外卖"}',
+    'meal: {meal:"早餐|午餐|晚餐|加餐|零食|饮料|水果|补剂", food:"字符串", portion:"少量|正常|偏多", fullness:1-5, where:"自炊|外食|外卖|零食", cost:数字(元，可选)}',
     'exercise: {kind:"跑步|力量|骑行|游泳|瑜伽|散步|球类|其他", minutes:数字, distance:数字(公里), rpe:1-10}',
     'study: {subject:"字符串", minutes:数字, focus:1-5, method:"阅读|听课|练习|写作|背诵"}',
     'mood: {score:1-5, tags:["字符串"], trigger:"字符串", energy:1-5}',
@@ -2545,7 +3254,7 @@
   function defaultData(type) {
     return {
       sleep: { bed: '23:30', wake: '07:00', hours: 7.5, quality: 3, wakeups: 0 },
-      meal: { meal: '午餐', food: '', fullness: 3, where: '自炊' },
+      meal: { meal: '午餐', food: '', portion: '正常', fullness: 3, where: '自炊', cost: 0, note: '' },
       exercise: { kind: '跑步', minutes: 30, distance: 0, rpe: 5 },
       study: { subject: '学习', minutes: 30, focus: 3, method: '阅读' },
       mood: { score: 3, tags: [], trigger: '', energy: 3 },
@@ -3235,12 +3944,12 @@
         state.events.push(ev);
         pushUndo('喝水', function () { removeEvents([ev.id]); });
         save(); render(); toast('💧 记了一杯水', { label: '撤销' });
-      } else if (q === 'coffee') {
-        const ev = mkEvent('meal', { meal: '咖啡', food: '咖啡', fullness: 1, where: '外食' }, todayKey(), nowHHMM(), 'manual');
-        state.events.push(ev);
-        pushUndo('咖啡', function () { removeEvents([ev.id]); });
-        save(); render(); toast('☕ 记了一杯咖啡', { label: '撤销' });
-      } else if (q === 'run') { openForm('exercise'); }
+      } else if (q === 'fruit') {
+        openForm('meal', null, { meal: '水果', where: '零食', portion: '正常', fullness: 3, cost: 0 });
+      } else if (q === 'snack') {
+        openForm('meal', null, { meal: '零食', where: '零食', portion: '少量', fullness: 2, cost: 0 });
+      } else if (q === 'run') { openForm('exercise', null, { kind: '跑步' }); }
+      else if (q === 'walk') { openForm('exercise', null, { kind: '散步', distance: 2 }); }
       else if (q === 'read') { openForm('study'); }
       else if (q === 'mood') { openForm('mood'); }
       else if (q === 'weight') { openForm('body'); }
@@ -3251,23 +3960,54 @@
     if (act === 'todo-add') {
       const inp = document.getElementById('todoInput');
       const text = inp ? inp.value.trim() : '';
-      if (!text) return;
-      state.todos.push({ id: uid('t'), text: text, done: false, date: todayKey() });
+      if (!text) { if (inp) inp.focus(); return; }
+      const timeEl = document.getElementById('todoTime');
+      const tagEl = document.querySelector('#todoTagRow .chip.sel');
+      state.todos.push({
+        id: uid('t'),
+        text: text,
+        done: false,
+        date: todayKey(),
+        time: timeEl ? timeEl.value : '',
+        tag: tagEl ? tagEl.dataset.val : '',
+        doneAt: ''
+      });
       save(); render();
       const ni = document.getElementById('todoInput');
       if (ni) ni.focus();
       return;
     }
 
+    if (act === 'todo-open') { openTodoSheet(el.dataset.id); return; }
+
+    if (act === 'todo-save') {
+      const t = state.todos.find(x => x.id === el.dataset.id);
+      if (!t) { closeOverlay(); return; }
+      const txt = document.getElementById('tdText');
+      const tm = document.getElementById('tdTime');
+      const tg = document.querySelector('#tdTagRow .chip.sel');
+      const v = txt ? txt.value.trim() : '';
+      if (!v) { toast('任务内容不能为空'); return; }
+      t.text = v;
+      t.time = tm ? tm.value : '';
+      t.tag = tg ? tg.dataset.val : '';
+      save(); closeOverlay(); render();
+      return;
+    }
+
     if (act === 'todo-toggle') {
       const t = state.todos.find(x => x.id === el.dataset.id);
-      if (t) { t.done = !t.done; save(); render(); }
+      if (t) {
+        t.done = !t.done;
+        t.doneAt = t.done ? nowHHMM() : '';
+        save(); render();
+      }
       return;
     }
 
     if (act === 'todo-del') {
       state.todos = state.todos.filter(x => x.id !== el.dataset.id);
-      save(); render();
+      save(); closeOverlay(); render();
       return;
     }
 
@@ -3275,6 +4015,12 @@
       ui.filter = el.dataset.f;
       ui.tlLimit = 14;
       renderMain();
+      return;
+    }
+
+    if (act === 'search-clear') {
+      ui.search = '';
+      renderMain(true);
       return;
     }
 
@@ -3294,6 +4040,10 @@
       openInsightDetail(Number(el.dataset.i));
       return;
     }
+
+    if (act === 'hr-open') { openHeartDetail(); return; }
+    if (act === 'hr-day') { openHeartDetail(el.dataset.d); return; }
+    if (act === 'dp') { openDetail(el.dataset.k); return; }
 
     if (act === 'sleep-replace' || act === 'sleep-add') {
       if (!pendingSleep) { closeOverlay(); return; }
@@ -3346,7 +4096,7 @@
     if (act === 'goal') {
       const k = el.dataset.k;
       const d = Number(el.dataset.d);
-      const limits = { sleepGoal: [4, 12], exerciseGoal: [5, 180], studyGoal: [10, 300], waterGoal: [1, 16], mealGoal: [1, 6] };
+      const limits = { sleepGoal: [4, 12], exerciseGoal: [5, 180], studyGoal: [10, 300], waterGoal: [1, 16], mealGoal: [1, 6], stepsGoal: [1000, 30000] };
       const lim = limits[k] || [0, 999];
       state.settings[k] = clamp(Math.round((state.settings[k] + d) * 10) / 10, lim[0], lim[1]);
       save(); renderMain();
@@ -3411,9 +4161,22 @@
     }
   });
 
-  /* 滑块 / 时间实时反馈 */
+  /* 滑块 / 时间实时反馈 / 时间轴搜索 */
   document.addEventListener('input', function (e) {
     const t = e.target;
+
+    if (t.id === 'tlSearch') {
+      ui.search = t.value;
+      const pos = t.selectionStart;
+      renderMain(true);
+      const ni = document.getElementById('tlSearch');
+      if (ni) {
+        ni.focus();
+        try { ni.setSelectionRange(pos, pos); } catch (err) { /* ignore */ }
+      }
+      return;
+    }
+
     if (t.matches('input[type="range"]')) {
       const k = t.dataset.f;
       const out = document.getElementById('rv_' + k);
@@ -3463,6 +4226,7 @@
       parseText: parseText, weekSummary: weekSummary, todayQuote: todayQuote, seed: seedDemo, save: save,
       openAdd: openAdd, openForm: openForm, openReport: openReport, openRecordActions: openRecordActions, showPreview: showPreview,
       saveForm: saveForm, collect: collect, undoLast: undoLast, pickOverlap: pickOverlap,
+      openTodoSheet: openTodoSheet, isMainMeal: isMainMeal,
       /* v2：AI 解析 */
       aiParse: aiParse, doParse: doParse, buildAIEvent: buildAIEvent, aiReady: aiReady,
       openAISettings: openAISettings, AI_SYSTEM_PROMPT: AI_SYSTEM_PROMPT,
@@ -3482,6 +4246,8 @@
       parseTCX: parseTCX, tcxToRecords: tcxToRecords, isTcxText: isTcxText,
       renderTcxSheet: renderTcxSheet, fmtPace: fmtPace,
       openExerciseDetail: openExerciseDetail, seriesSvg: seriesSvg, trackSvg: trackSvg,
+      openHeartDetail: openHeartDetail, heartDays: heartDays, hrSeriesOf: hrSeriesOf, eventText: eventText,
+      openDetail: openDetail,
       attachHrToExercise: attachHrToExercise, exerciseWindow: exerciseWindow
     };
   }

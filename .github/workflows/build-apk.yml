@@ -29,6 +29,12 @@ jobs:
       - run: npx cap add android
         working-directory: native
 
+      - name: Raise minSdk to 26 (Health Connect requires API 26)
+        working-directory: native
+        run: |
+          sed -i -E 's/minSdkVersion[[:space:]]*=[[:space:]]*[0-9]+/minSdkVersion = 26/' android/variables.gradle
+          grep minSdkVersion android/variables.gradle
+
       - run: echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > native/android/local.properties
 
       - run: npx cap sync android

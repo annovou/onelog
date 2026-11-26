@@ -1,0 +1,23 @@
+{
+  "name": "onelog",
+  "version": "1.0.0",
+  "private": true,
+  "description": "一天 · 生活记录（Capacitor 壳）",
+  "scripts": {
+    "sync:web": "node sync-web.js",
+    "sync": "node sync-web.js && cap sync android",
+    "open": "cap open android",
+    "add:android": "cap add android"
+  },
+  "dependencies": {
+    "@capgo/capacitor-health": "^8.0.0",
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/local-notifications": "^8.0.0",
+    "@capacitor/status-bar": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  }
+}

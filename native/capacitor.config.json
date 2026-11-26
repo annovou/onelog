@@ -1,0 +1,12 @@
+{
+  "appId": "com.yako.onelog",
+  "appName": "一天",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#F6F4F0"
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}
